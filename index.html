@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>n Shooter - 核分裂連鎖反応シューティング</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: linear-gradient(#cdeeff, #f5faff);
+    height: 100%;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "HGP創英丸ゴシック UB", "Rounded Mplus 1c", "Kosugi Maru", "Meiryo", sans-serif;
+    /* ship touch controls now respond across the whole light-blue
+       letterboxing area too (see bindTouchEvents() in game.js), not just the
+       canvas - this keeps native scroll/pinch-zoom/pull-to-refresh gestures
+       from competing with that out there */
+    touch-action: none;
+    overscroll-behavior: none;
+    /* mouse controls (see bindMouseEvents() in game.js) mirror touch across
+       this same whole-window area - without this, click-dragging the ship
+       would also highlight/select page text along the way */
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  #wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    max-width: 100vw;
+    max-height: 100vh;
+  }
+  canvas {
+    background: #eaf9ff;
+    border-radius: 18px;
+    box-shadow: 0 8px 24px rgba(80, 60, 150, 0.25);
+    display: block;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  #learningLog {
+    min-height: 20px;
+    padding: 6px 16px;
+    border-radius: 12px;
+    /* solid, fully opaque white - unlike the message text inside (see
+       #learningLogText), this box never fades/dims, so nothing behind it
+       (canvas shadow, page background) can ever show through and tint it */
+    background: #ffffff;
+    border: 2px solid transparent;
+    box-shadow: 0 4px 10px rgba(80, 60, 150, 0.2);
+    color: #3a2f6b;
+    font-weight: bold;
+    font-size: 13px;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+  /* rare-event highlight (delayed-neutron messages, see logNuclearEvent()'s
+     `rare` flag / syncLearningLogDOM()) - a gold glow around the otherwise
+     plain white box, so the message visually stands out as worth noticing.
+     the transition lives ONLY here (not on the base #learningLog rule above),
+     so it's one-way: turning the glow on eases in over 0.2s, but turning it
+     off (class removed -> falls back to the base rule, which has no
+     transition) snaps off instantly instead of still fading out while the
+     next message's text has already appeared underneath it. back-to-back
+     rare messages never hit this at all since the class simply never gets
+     removed in between (see syncLearningLogDOM()'s classList.toggle) */
+  #learningLog.rare {
+    border-color: #ffb703;
+    box-shadow: 0 4px 10px rgba(80, 60, 150, 0.2), 0 0 14px 3px rgba(255, 183, 3, 0.65);
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  #learningLog sup {
+    font-size: 0.7em;
+  }
+  #canvasWrap {
+    position: relative;
+    display: inline-block;
+  }
+  #nameEntryOverlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(20, 10, 60, 0.55);
+    border-radius: 18px;
+  }
+  #nameEntryOverlay.hidden {
+    display: none;
+  }
+  #hudOverlay, #titleOverlay, #fissionExplainerOverlay, #gameOverOverlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  #hudOverlay.hidden, #titleOverlay.hidden, #fissionExplainerOverlay.hidden, #gameOverOverlay.hidden {
+    display: none;
+  }
+  .hudText {
+    position: absolute;
+    top: 0;
+    left: 0;
+    color: #3a2f6b;
+    font-weight: bold;
+    white-space: nowrap;
+    line-height: 1;
+  }
+  .hudText.center {
+    transform: translateX(-50%);
+    /* only matters for multi-line content (e.g. periodic-table cells/chips
+       showing a symbol line + a smaller "×N" count line below it) - for the
+       single-line case this box is already exactly text-width, so it's a no-op */
+    text-align: center;
+  }
+  .hudText.regular {
+    font-weight: normal;
+  }
+  .hudText sup {
+    font-size: 0.62em;
+  }
+  /* decay-chain readout (periodic table panel, drill level 2) is the one
+     piece of HUD text whose length isn't known ahead of time, so it wraps
+     instead of the usual single-line nowrap */
+  .hudText.wrap {
+    white-space: normal;
+    line-height: 1.35;
+  }
+  /* title-screen logo treatment: keeps the same rounded pop body font used
+     everywhere else in the UI (no separate display face), just given a
+     candy-colored gradient pulled from colors already used elsewhere on this
+     same screen (accent pink -> pu violet) plus a soft white outline and a
+     tinted glow, so it reads as a logo without clashing with the rest of the
+     pastel palette */
+  .titleLogo {
+    background: linear-gradient(135deg, #ff6b81 0%, #8b6bff 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-stroke: 2px rgba(255, 255, 255, 0.85);
+    paint-order: stroke fill;
+    filter: drop-shadow(0 3px 5px rgba(139, 107, 255, 0.35));
+  }
+  .nameEntryBox {
+    background: rgba(255, 255, 255, 0.95);
+    padding: 20px 26px;
+    border-radius: 16px;
+    text-align: center;
+    box-shadow: 0 8px 24px rgba(80, 60, 150, 0.35);
+    color: #3a2f6b;
+  }
+  .nameEntryBox p {
+    margin: 0 0 10px;
+    font-weight: bold;
+  }
+  .nameEntryBox input {
+    font-size: 18px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 2px solid #8b6bff;
+    text-align: center;
+    width: 180px;
+    font-family: inherit;
+  }
+  .nameEntryBox button {
+    display: block;
+    margin: 12px auto 0;
+    font-size: 16px;
+    padding: 6px 24px;
+    border-radius: 8px;
+    border: none;
+    background: #ff6b81;
+    color: white;
+    font-weight: bold;
+    cursor: pointer;
+    font-family: inherit;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="canvasWrap">
+    <canvas id="game" width="640" height="480"></canvas>
+    <div id="hudOverlay" class="hidden">
+      <div id="hudPlayerName" class="hudText center"></div>
+      <div id="hudScoreLabel" class="hudText center">Score</div>
+      <div id="hudScoreValue" class="hudText center"></div>
+      <div id="hudTimeLabel" class="hudText center">Time</div>
+      <div id="hudTimeValue" class="hudText center"></div>
+      <div id="hudPowerLabel" class="hudText">Power</div>
+      <div id="hudChainLabel" class="hudText">Neutron Chain</div>
+      <div id="hudChainValue" class="hudText center"></div>
+    </div>
+    <div id="titleOverlay" class="hidden"></div>
+    <div id="fissionExplainerOverlay" class="hidden"></div>
+    <div id="gameOverOverlay" class="hidden"></div>
+    <div id="nameEntryOverlay" class="hidden">
+      <div class="nameEntryBox">
+        <p>プレイヤー名を入力してください</p>
+        <input id="nameEntryInput" type="text" maxlength="10" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <button id="nameEntryConfirm">決定</button>
+      </div>
+    </div>
+  </div>
+  <div id="learningLog"><span id="learningLogText"></span></div>
+</div>
+<script src="data/fission_products_u235_thermal.js"></script>
+<script src="data/fission_products_u235_500keV.js"></script>
+<script src="data/fission_products_u235_14MeV.js"></script>
+<script src="data/fission_products_pu239_thermal.js"></script>
+<script src="data/fission_products_pu239_500keV.js"></script>
+<script src="data/fission_products_pu239_14MeV.js"></script>
+<script src="data/decay_data.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
